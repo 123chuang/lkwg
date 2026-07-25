@@ -14,6 +14,11 @@ pyinstaller ^
     --clean ^
     --onefile ^
     --windowed ^
+    --hidden-import pyautogui ^
+    --hidden-import mss ^
+    --hidden-import cv2 ^
+    --hidden-import PIL ^
+    --hidden-import pynput ^
     --name GenericAutoClicker ^
     auto_clicker.py
 

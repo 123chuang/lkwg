@@ -30,19 +30,36 @@ def enable_windows_dpi_awareness() -> None:
 
 def load_runtime_dependencies():
     missing: list[str] = []
-    modules = {}
 
-    for import_name, package_name in (
-        ("pyautogui", "pyautogui"),
-        ("mss", "mss"),
-        ("cv2", "opencv-python"),
-        ("PIL", "Pillow"),
-        ("pynput", "pynput"),
-    ):
-        try:
-            modules[import_name] = __import__(import_name)
-        except ModuleNotFoundError:
-            missing.append(package_name)
+    try:
+        import pyautogui
+    except ModuleNotFoundError:
+        pyautogui = None
+        missing.append("pyautogui")
+
+    try:
+        import mss
+    except ModuleNotFoundError:
+        mss = None
+        missing.append("mss")
+
+    try:
+        import cv2
+    except ModuleNotFoundError:
+        cv2 = None
+        missing.append("opencv-python")
+
+    try:
+        from PIL import Image
+    except ModuleNotFoundError:
+        Image = None
+        missing.append("Pillow")
+
+    try:
+        from pynput import keyboard
+    except ModuleNotFoundError:
+        keyboard = None
+        missing.append("pynput")
 
     if missing:
         deps = " ".join(missing)
@@ -52,10 +69,7 @@ def load_runtime_dependencies():
             + f"\n\n请先运行：\npython3 -m pip install {deps}"
         )
 
-    from PIL import Image
-    from pynput import keyboard
-
-    return modules["pyautogui"], modules["mss"], modules["cv2"], Image, keyboard
+    return pyautogui, mss, cv2, Image, keyboard
 
 
 enable_windows_dpi_awareness()
