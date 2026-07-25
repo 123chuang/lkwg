@@ -124,6 +124,8 @@ class ClickSettings:
     pre_click_max: float
     press_min: float
     press_max: float
+    start_delay: float
+    minimize_on_start: bool
 
 
 class RegionSelector(tk.Toplevel):
@@ -202,8 +204,8 @@ class AutoClickerApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("通用区域点击器")
-        self.root.geometry("560x700")
-        self.root.minsize(520, 680)
+        self.root.geometry("560x760")
+        self.root.minsize(520, 740)
 
         self.region: Region | None = None
         self.template_image = None
@@ -227,6 +229,8 @@ class AutoClickerApp:
         self.pre_click_max = tk.StringVar(value="0.18")
         self.press_min = tk.StringVar(value="0.04")
         self.press_max = tk.StringVar(value="0.12")
+        self.start_delay = tk.StringVar(value="3")
+        self.minimize_on_start = tk.BooleanVar(value=True)
         self.dry_run = tk.BooleanVar(value=False)
         self.status = tk.StringVar(value="未启动")
         self.region_text = tk.StringVar(value="未选择")
@@ -294,8 +298,9 @@ class AutoClickerApp:
         self.add_entry(settings, 8, "点击前停顿最大(秒)", self.pre_click_max)
         self.add_entry(settings, 9, "按压最短时间(秒)", self.press_min)
         self.add_entry(settings, 10, "按压最长时间(秒)", self.press_max)
+        self.add_entry(settings, 11, "启动前延迟(秒)", self.start_delay)
         ttk.Checkbutton(settings, text="鼠标按曲线轨迹移动到点击点", variable=self.use_curve).grid(
-            row=11,
+            row=12,
             column=0,
             columnspan=2,
             sticky=tk.W,
@@ -303,7 +308,15 @@ class AutoClickerApp:
             pady=(6, 2),
         )
         ttk.Checkbutton(settings, text="移动速度随机变化", variable=self.random_speed).grid(
-            row=12,
+            row=13,
+            column=0,
+            columnspan=2,
+            sticky=tk.W,
+            padx=8,
+            pady=(2, 2),
+        )
+        ttk.Checkbutton(settings, text="启动后最小化窗口", variable=self.minimize_on_start).grid(
+            row=14,
             column=0,
             columnspan=2,
             sticky=tk.W,
@@ -311,7 +324,7 @@ class AutoClickerApp:
             pady=(2, 2),
         )
         ttk.Checkbutton(settings, text="测试模式：只移动鼠标，不点击", variable=self.dry_run).grid(
-            row=13,
+            row=15,
             column=0,
             columnspan=2,
             sticky=tk.W,
@@ -440,6 +453,7 @@ class AutoClickerApp:
         pre_click_max = max(pre_click_min, float(self.pre_click_max.get()))
         press_min = max(0.0, float(self.press_min.get()))
         press_max = max(press_min, float(self.press_max.get()))
+        start_delay = max(0.0, float(self.start_delay.get()))
         return ClickSettings(
             duration=duration,
             min_delay=min_delay,
@@ -454,6 +468,8 @@ class AutoClickerApp:
             pre_click_max=pre_click_max,
             press_min=press_min,
             press_max=press_max,
+            start_delay=start_delay,
+            minimize_on_start=self.minimize_on_start.get(),
         )
 
     def start(self) -> None:
@@ -472,7 +488,7 @@ class AutoClickerApp:
         try:
             settings = self.parse_settings()
         except ValueError:
-            messagebox.showerror("设置错误", "请确认时长、间隔、阈值、偏移、移动和点击参数都是数字。")
+            messagebox.showerror("设置错误", "请确认时长、间隔、阈值、偏移、移动、点击和启动延迟参数都是数字。")
             return
 
         with self.lock:
@@ -483,6 +499,8 @@ class AutoClickerApp:
 
         self.stop_event.clear()
         self.pause_event.clear()
+        if settings.minimize_on_start:
+            self.root.iconify()
         self.worker = threading.Thread(
             target=self.run_loop,
             args=(region, mode, template, settings, dry_run),
@@ -515,7 +533,15 @@ class AutoClickerApp:
         dry_run: bool,
     ) -> None:
         try:
+            if settings.start_delay > 0:
+                self.set_status_threadsafe(f"等待启动：{settings.start_delay:g} 秒")
+                self.sleep_interruptibly(settings.start_delay)
+                if self.stop_event.is_set():
+                    return
+
             start_time = time.monotonic()
+            action_count = 0
+            miss_count = 0
 
             while not self.stop_event.is_set():
                 if settings.duration and time.monotonic() - start_time >= settings.duration:
@@ -531,8 +557,12 @@ class AutoClickerApp:
                 if mode == "target":
                     point = self.find_target(region, template, settings.confidence)
                     if point is None:
+                        miss_count += 1
+                        if miss_count == 1 or miss_count % 10 == 0:
+                            self.set_status_threadsafe(f"运行中：未找到目标({miss_count})")
                         time.sleep(0.2)
                         continue
+                    miss_count = 0
                     x, y = point
                     x += settings.offset_x
                     y += settings.offset_y
@@ -546,7 +576,10 @@ class AutoClickerApp:
                 if dry_run:
                     pass
                 else:
-                    self.perform_click(settings)
+                    self.perform_click(x, y, settings)
+                action_count += 1
+                action_name = "已移动" if dry_run else "已点击"
+                self.set_status_threadsafe(f"运行中：{action_name} {action_count} 次")
                 time.sleep(random.uniform(settings.min_delay, settings.max_delay))
         except pyautogui.FailSafeException:
             self.root.after(0, lambda: self.status.set("安全角已触发，已停止"))
@@ -561,16 +594,19 @@ class AutoClickerApp:
         finally:
             self.stop_event.set()
 
-    def perform_click(self, settings: ClickSettings) -> None:
+    def perform_click(self, x: int, y: int, settings: ClickSettings) -> None:
         self.sleep_interruptibly(random.uniform(settings.pre_click_min, settings.pre_click_max))
         if self.stop_event.is_set():
             return
 
-        pyautogui.mouseDown()
+        pyautogui.mouseDown(x=x, y=y)
         try:
             self.sleep_interruptibly(random.uniform(settings.press_min, settings.press_max))
         finally:
-            pyautogui.mouseUp()
+            pyautogui.mouseUp(x=x, y=y)
+
+    def set_status_threadsafe(self, text: str) -> None:
+        self.root.after(0, lambda: self.status.set(text))
 
     def sleep_interruptibly(self, seconds: float) -> None:
         deadline = time.monotonic() + seconds
